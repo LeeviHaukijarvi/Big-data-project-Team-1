@@ -1,0 +1,132 @@
+version: '3.8'
+
+services:
+  # Data upload - streams parquet files from HuggingFace to Azure RAW/ folder.
+  # Runs once on startup; skips files already present. All pipeline services wait on this.
+  data-upload:
+    build:
+      context: ./scripts
+    container_name: data-upload
+    network_mode: host
+    env_file:
+      - .env
+    restart: "no"
+
+  # Zookeeper - coordination service for Kafka
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: zookeeper
+    network_mode: host
+    depends_on:
+      data-upload:
+        condition: service_completed_successfully
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  # Kafka broker - message queue backbone
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: kafka
+    network_mode: host
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: localhost:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    healthcheck:
+      test: ["CMD", "kafka-broker-api-versions", "--bootstrap-server", "localhost:9092"]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # Kafka topic initialization - creates topics on startup
+  kafka-init:
+    image: confluentinc/cp-kafka:7.6.0
+    network_mode: host
+    depends_on:
+      kafka:
+        condition: service_healthy
+    command: >
+      bash -c "
+      kafka-topics --create --if-not-exists --bootstrap-server localhost:29092 --replication-factor 1 --partitions 3 --topic raw-text &&
+      kafka-topics --create --if-not-exists --bootstrap-server localhost:29092 --replication-factor 1 --partitions 3 --topic normalized-text &&
+      kafka-topics --create --if-not-exists --bootstrap-server localhost:29092 --replication-factor 1 --partitions 3 --topic modeled-text &&
+      kafka-topics --create --if-not-exists --bootstrap-server localhost:29092 --replication-factor 1 --partitions 3 --topic storage-results &&
+      echo 'Topics created successfully'
+      "
+
+  # Data ingestion service - reads OpenWebText2 and produces to raw-text topic
+  ingestion:
+    build:
+      context: ./services/ingestion
+    container_name: ingestion
+    network_mode: host
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./services/shared:/app/shared:ro
+    env_file:
+      - .env
+    environment:
+      MAX_MESSAGES: 1000
+      KAFKA_BROKER: localhost:29092
+
+  # Normalization service - consumes raw-text, normalizes, produces to normalized-text
+  normalization:
+    build:
+      context: ./services/normalization
+    container_name: normalization
+    network_mode: host
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./services/shared:/app/shared:ro
+    env_file:
+      - .env
+    environment:
+      KAFKA_BROKER: localhost:29092
+    restart: on-failure
+
+  # Topic modeling service - consumes normalized-text, runs LDA, produces to modeled-text
+  modeling:
+    build:
+      context: ./services/modeling
+    container_name: modeling
+    network_mode: host
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./services/shared:/app/shared:ro
+    env_file:
+      - .env
+    environment:
+      KAFKA_BROKER: localhost:29092
+    restart: on-failure
+
+  # Storage service - consumes modeled-text, writes to Azure Blob, produces confirmations
+  storage:
+    build:
+      context: ./services/storage
+    container_name: storage
+    network_mode: host
+    depends_on:
+      kafka:
+        condition: service_healthy
+    volumes:
+      - ./services/shared:/app/shared:ro
+      - ./output:/app/output
+    env_file:
+      - .env
+    environment:
+      KAFKA_BROKER: localhost:29092
+    restart: on-failure
