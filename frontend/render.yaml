@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: openwebtext-dashboard
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    envVars:
+      - key: AZURE_STORAGE_CONNECTION_STRING
+        sync: false
+      - key: AZURE_CONTAINER_NAME
+        value: blob
