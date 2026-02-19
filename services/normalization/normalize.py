@@ -3,6 +3,10 @@ Normalization service - consumes raw text from Kafka, normalizes it, and produce
 Performs lowercase conversion, URL removal, HTML tag stripping, special character removal, and whitespace normalization.
 """
 import sys
+import re
+import unicodedata
+from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
+
 sys.path.insert(0, "/app")
 
 from shared.config import KAFKA_BROKER, KAFKA_TOPICS
@@ -40,14 +44,57 @@ def normalize_text(text: str) -> str:
     # Lowercase
     text = text.lower()
 
+    text = unicodedata.normalize("NFKC", text)
+
     # Remove URLs
     text = re.sub(r'https?://\S+', '', text)
 
+    # Remove emails
+    text = re.sub(r'\S+@\S+', '', text)
+
     # Remove HTML tags
     text = re.sub(r'<[^>]+>', '', text)
+    
+    # Remove time
+    text = re.sub(r'\b\d{1,2}:\d{2}:\d{2}\s*(am|pm)?\b', '', text)
+
+    # Remove dates
+    text = re.sub(
+    r'\b(january|february|march|april|may|june|july|august|september|october|november|december|'
+    r'jan|feb|mar|apr|jun|jul|aug|sep|oct|nov|dec)'
+    r'\s+\d{1,2}(,\s*\d{4})?\b',
+    '',
+    text,
+    flags=re.IGNORECASE)
+    
+    # Remove page markers like [ 9 ]
+    text = re.sub(r'\[\s*\d+\s*\]', '', text)
 
     # Remove special characters but keep basic punctuation
-    text = re.sub(r'[^a-z0-9\s.,!?;:\'-]', '', text)
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+
+    # removing nos..
+    text = re.sub(r'\d+', '', text)
+
+    # Remove dollar amounts
+    text = re.sub(r'\$\s?\d[\d,]*', '', text)
+
+    # Remove repeated punctuation
+    text = re.sub(r'([!?.,])\1+', r'\1', text)
+
+    text = text.replace('-', ' ')
+
+    # Remove standalone years
+    text = re.sub(r'\b(19|20)\d{2}\b', '', text)
+
+    stop_words = set(ENGLISH_STOP_WORDS)
+
+    def remove_stopwords(text):
+        tokens = text.split()
+        tokens = [t for t in tokens if t not in stop_words]
+        return " ".join(tokens)
+    
+    text = remove_stopwords(text)
 
     # Collapse multiple whitespace
     text = re.sub(r'\s+', ' ', text).strip()
