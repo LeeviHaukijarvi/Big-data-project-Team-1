@@ -1,16 +1,35 @@
-"""
-Modeling service entry point.
-This module is called by the backend pipeline.
-"""
+from pyspark.sql import SparkSession
+from pyspark.ml.feature import CountVectorizer
+from pyspark.ml.clustering import LDA
+
 
 def run_modeling(input_path: str = "data/normalized/"):
-    print("Modeling started")
-    print(f"Reading data from {input_path}")
+    spark = SparkSession.builder \
+        .appName("TopicModeling") \
+        .getOrCreate()
 
-    # Topic modeling logic will be implemented here
-    # (e.g., Spark LDA / BERTopic)
+    # Load normalized data (expects a 'tokens' column)
+    df = spark.read.parquet(input_path)
 
-    print("Modeling finished successfully")
+    # Convert tokens to feature vectors
+    vectorizer = CountVectorizer(
+        inputCol="tokens",
+        outputCol="features",
+        vocabSize=10000,
+        minDF=5
+    )
+    vector_model = vectorizer.fit(df)
+    vectorized_df = vector_model.transform(df)
+
+    # Train LDA model
+    lda = LDA(k=10, maxIter=10, featuresCol="features")
+    lda_model = lda.fit(vectorized_df)
+
+    # Show topics
+    print("===== Extracted Topics =====")
+    lda_model.describeTopics().show(truncate=False)
+
+    spark.stop()
 
 
 if __name__ == "__main__":
