@@ -123,7 +123,6 @@ Open http://localhost:8501 in your browser.
 │   ├── normalization/          # Text normalization service
 │   ├── modeling/               # LDA topic modeling + drift detection
 │   └── storage/                # Azure storage service
-└── notebooks/                  # Original prototypes
 ```
 
 ## Team
