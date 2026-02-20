@@ -74,8 +74,19 @@ def split_batch(data: list, batch_num: int, timestamp: str) -> dict:
         })
         features.append({
             "id": msg.get("id"),
+            "text": msg.get("text", ""),
+            "title": msg.get("title", ""),
+            "score": msg.get("score", 0.0),
+            "original_length": msg.get("original_length"),
+            "normalized_length": msg.get("normalized_length"),
             "model_version": msg.get("model_version"),
-            "topics": json.dumps(msg.get("topics", [])),
+            "dominant_topic": msg.get("dominant_topic", -1),
+            "topic_distribution": msg.get("topic_distribution", []),
+            "top_words": msg.get("top_words", []),
+            "window_id": msg.get("window_id", 0),
+            "drift_detected": msg.get("drift_detected", False),
+            "js_divergence": msg.get("js_divergence", 0.0),
+            "drift_magnitude": msg.get("drift_magnitude", "none"),
         })
 
     metadata = {
