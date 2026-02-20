@@ -200,68 +200,62 @@ def render_overview_tab(df: pd.DataFrame):
     """Render the Overview tab with summary statistics."""
     st.header("Data Overview")
 
+    # Model info if available
+    if "model_version" in df.columns:
+        model_version = df["model_version"].iloc[0] if len(df) > 0 else "N/A"
+        st.info(f"Model Version: **{model_version}**")
+
     # Summary metrics
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3 = st.columns(3)
 
     with col1:
         st.metric("Total Records", f"{len(df):,}")
 
     with col2:
-        avg_score = df["score"].mean() if "score" in df.columns else 0
-        st.metric("Avg Score", f"{avg_score:.2f}")
-
-    with col3:
         if "original_length" in df.columns:
             avg_orig = df["original_length"].mean()
             st.metric("Avg Original Length", f"{avg_orig:,.0f}")
         else:
             st.metric("Avg Original Length", "N/A")
 
-    with col4:
+    with col3:
         if "normalized_length" in df.columns:
             avg_norm = df["normalized_length"].mean()
             st.metric("Avg Normalized Length", f"{avg_norm:,.0f}")
         else:
             st.metric("Avg Normalized Length", "N/A")
 
+    # Topic stats if available
+    if "dominant_topic" in df.columns:
+        col1, col2 = st.columns(2)
+        with col1:
+            num_topics = df["dominant_topic"].nunique()
+            st.metric("Topics Detected", num_topics)
+        with col2:
+            if "drift_detected" in df.columns:
+                drift_count = df[df["drift_detected"] == True]["window_id"].nunique() if "window_id" in df.columns else 0
+                st.metric("Drift Events", drift_count)
+
     st.divider()
 
-    # Charts row
-    col1, col2 = st.columns(2)
-
-    with col1:
-        st.subheader("Score Distribution")
-        if "score" in df.columns:
-            fig = px.histogram(
-                df,
-                x="score",
-                nbins=50,
-                title="Distribution of Content Quality Scores",
-                labels={"score": "Score", "count": "Count"}
-            )
-            fig.update_layout(showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Score column not available")
-
-    with col2:
-        st.subheader("Text Length Comparison")
-        if "original_length" in df.columns and "normalized_length" in df.columns:
-            length_df = pd.DataFrame({
-                "Type": ["Original"] * len(df) + ["Normalized"] * len(df),
-                "Length": list(df["original_length"]) + list(df["normalized_length"])
-            })
-            fig = px.box(
-                length_df,
-                x="Type",
-                y="Length",
-                title="Original vs Normalized Text Lengths",
-                color="Type"
-            )
-            fig.update_layout(showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("Length columns not available")
+    # Text length comparison chart
+    st.subheader("Text Length Comparison")
+    if "original_length" in df.columns and "normalized_length" in df.columns:
+        length_df = pd.DataFrame({
+            "Type": ["Original"] * len(df) + ["Normalized"] * len(df),
+            "Length": list(df["original_length"]) + list(df["normalized_length"])
+        })
+        fig = px.box(
+            length_df,
+            x="Type",
+            y="Length",
+            title="Original vs Normalized Text Lengths",
+            color="Type"
+        )
+        fig.update_layout(showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("Length columns not available")
 
     # Length reduction stats
     if "original_length" in df.columns and "normalized_length" in df.columns:
@@ -287,26 +281,9 @@ def render_samples_tab(df: pd.DataFrame):
     """Render the Text Samples tab with filterable data."""
     st.header("Text Samples")
 
-    # Filters
-    col1, col2 = st.columns(2)
-
-    with col1:
-        if "score" in df.columns:
-            min_score, max_score = float(df["score"].min()), float(df["score"].max())
-            score_range = st.slider(
-                "Filter by score range",
-                min_value=min_score,
-                max_value=max_score,
-                value=(min_score, max_score)
-            )
-            filtered_df = df[
-                (df["score"] >= score_range[0]) & (df["score"] <= score_range[1])
-            ]
-        else:
-            filtered_df = df
-
-    with col2:
-        st.metric("Filtered Records", f"{len(filtered_df):,}")
+    # Record count
+    filtered_df = df
+    st.metric("Total Records", f"{len(filtered_df):,}")
 
     st.divider()
 
@@ -324,10 +301,8 @@ def render_samples_tab(df: pd.DataFrame):
     page_df = filtered_df.iloc[start_idx:end_idx]
 
     for idx, row in page_df.iterrows():
-        with st.expander(
-            f"Record {row.get('id', idx)} | Score: {row.get('score', 'N/A'):.2f}"
-            if 'score' in row else f"Record {row.get('id', idx)}"
-        ):
+        topic_label = f" | Topic {row['dominant_topic']}" if 'dominant_topic' in row and row.get('dominant_topic', -1) >= 0 else ""
+        with st.expander(f"Record {row.get('id', idx)}{topic_label}"):
             if "text" in row:
                 text = str(row["text"])
                 # Show snippet first, full text on expansion
@@ -339,13 +314,22 @@ def render_samples_tab(df: pd.DataFrame):
                     st.text(text)
 
             # Show metadata
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns(3)
             with col1:
                 if "original_length" in row:
                     st.caption(f"Original length: {row['original_length']:,}")
             with col2:
                 if "normalized_length" in row:
                     st.caption(f"Normalized length: {row['normalized_length']:,}")
+            with col3:
+                if "dominant_topic" in row and row["dominant_topic"] >= 0:
+                    st.caption(f"Topic: {row['dominant_topic']}")
+
+            # Show top words if available
+            if "top_words" in row:
+                words = row["top_words"]
+                if words is not None and isinstance(words, (list, np.ndarray)) and len(words) > 0:
+                    st.caption(f"Top words: {', '.join(str(w) for w in words[:5])}")
 
 
 def render_topics_tab(df: pd.DataFrame, has_topics: bool):
@@ -391,17 +375,23 @@ def render_topics_tab(df: pd.DataFrame, has_topics: bool):
         for _, row in df.iterrows():
             topic_id = row.get("dominant_topic", -1)
             words = row.get("top_words", [])
-            if topic_id >= 0 and words and topic_id not in topic_words:
+            # Handle numpy arrays and lists
+            if isinstance(words, np.ndarray):
+                words = words.tolist()
+            if topic_id >= 0 and words and len(words) > 0 and topic_id not in topic_words:
                 topic_words[topic_id] = words
 
-        cols = st.columns(min(5, len(topic_words)))
-        for i, (topic_id, words) in enumerate(sorted(topic_words.items())):
-            with cols[i % 5]:
-                st.markdown(f"**Topic {topic_id}**")
-                if isinstance(words, list):
-                    st.caption(", ".join(words[:7]))
-                else:
-                    st.caption(str(words))
+        if topic_words:
+            cols = st.columns(min(5, max(1, len(topic_words))))
+            for i, (topic_id, words) in enumerate(sorted(topic_words.items())):
+                with cols[i % len(cols)]:
+                    st.markdown(f"**Topic {topic_id}**")
+                    if isinstance(words, (list, np.ndarray)):
+                        st.caption(", ".join(str(w) for w in words[:7]))
+                    else:
+                        st.caption(str(words))
+        else:
+            st.info("No topic words available yet")
 
     # Topic distribution heatmap
     st.subheader("Topic Probability Distribution")
@@ -412,12 +402,15 @@ def render_topics_tab(df: pd.DataFrame, has_topics: bool):
         dist_data = []
         for idx, row in sample_df.iterrows():
             dist = row.get("topic_distribution", [])
+            # Handle numpy arrays
+            if isinstance(dist, np.ndarray):
+                dist = dist.tolist()
             if isinstance(dist, list) and len(dist) > 0:
                 for topic_idx, prob in enumerate(dist):
                     dist_data.append({
                         "Document": f"Doc {row.get('id', idx)}",
                         "Topic": f"T{topic_idx}",
-                        "Probability": prob
+                        "Probability": float(prob) if prob is not None else 0.0
                     })
 
         if dist_data:
@@ -431,6 +424,8 @@ def render_topics_tab(df: pd.DataFrame, has_topics: bool):
                 color_continuous_scale="Viridis"
             )
             st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("No topic distribution data available")
 
 
 def render_drift_tab(df: pd.DataFrame, has_topics: bool):
