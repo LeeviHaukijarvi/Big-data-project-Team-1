@@ -9,7 +9,7 @@ from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
 
 sys.path.insert(0, "/app")
 
-from shared.config import KAFKA_BROKER, KAFKA_TOPICS
+from shared.config import KAFKA_BROKER, KAFKA_TOPICS, BATCH_SIZE
 from shared.kafka_utils import create_consumer, create_producer
 import re
 import logging
@@ -144,8 +144,8 @@ if __name__ == "__main__":
 
                 processed_count += 1
 
-                # Log progress every 100 messages
-                if processed_count % 100 == 0:
+                # Log progress every BATCH_SIZE messages
+                if processed_count % BATCH_SIZE == 0:
                     logger.info(f"Processed {processed_count} messages")
 
             except Exception as e:
