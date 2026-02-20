@@ -50,7 +50,6 @@ Monitors topic distribution changes over time using Jensen-Shannon divergence:
 ### Prerequisites
 
 - Docker and Docker Compose
-- Azure Storage Account
 - Python 3.11+ (for local development)
 
 ### Environment Variables
@@ -118,11 +117,11 @@ Open http://localhost:8501 in your browser.
 │   ├── Dockerfile
 │   └── requirements.txt
 ├── services/
-│   ├── shared/                 # Shared config and utilities
-│   ├── ingestion/              # Data ingestion service
-│   ├── normalization/          # Text normalization service
-│   ├── modeling/               # LDA topic modeling + drift detection
-│   └── storage/                # Azure storage service
+    ├── shared/                 # Shared config and utilities
+    ├── ingestion/              # Data ingestion service
+    ├── normalization/          # Text normalization service
+    ├── modeling/               # LDA topic modeling + drift detection
+    └── storage/                # Azure storage service
 ```
 
 ## Team
