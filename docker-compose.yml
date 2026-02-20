@@ -76,7 +76,7 @@ services:
     env_file:
       - .env
     environment:
-      MAX_MESSAGES: 1000
+      MAX_MESSAGES: 10000
       KAFKA_BROKER: localhost:29092
 
   # Normalization service - consumes raw-text, normalizes, produces to normalized-text
