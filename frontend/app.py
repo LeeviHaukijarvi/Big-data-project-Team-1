@@ -8,6 +8,7 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -38,6 +39,7 @@ st.set_page_config(
 AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
 AZURE_CONTAINER_NAME = os.getenv("AZURE_CONTAINER_NAME", "blob")
 PROCESSED_PREFIX = "PROCESSED/"
+FEATURES_PREFIX = "FEATURES/"
 
 
 @st.cache_resource
@@ -68,6 +70,25 @@ def list_processed_files() -> list[str]:
         return sorted(blobs)
     except Exception as e:
         st.error(f"Failed to list files: {e}")
+        return []
+
+
+@st.cache_data(ttl=300)
+def list_feature_files() -> list[str]:
+    """List all parquet files in FEATURES/ folder."""
+    client = get_blob_service_client()
+    if not client:
+        return []
+
+    try:
+        container_client = client.get_container_client(AZURE_CONTAINER_NAME)
+        blobs = [
+            b.name for b in container_client.list_blobs(name_starts_with=FEATURES_PREFIX)
+            if b.name.endswith(".parquet")
+        ]
+        return sorted(blobs)
+    except Exception as e:
+        st.error(f"Failed to list feature files: {e}")
         return []
 
 
@@ -126,20 +147,36 @@ def render_sidebar():
     else:
         st.sidebar.error("Not connected")
         st.sidebar.caption("Set AZURE_STORAGE_CONNECTION_STRING in .env")
-        return None, 0
+        return None, None, 0
 
-    # File selector
+    # Data source selection
     st.sidebar.subheader("Data Selection")
-    files = list_processed_files()
+
+    processed_files = list_processed_files()
+    feature_files = list_feature_files()
+
+    # Choose data source
+    data_source = st.sidebar.radio(
+        "Data source",
+        ["Processed (text only)", "Features (with topics)"],
+        index=1 if feature_files else 0
+    )
+
+    if data_source == "Features (with topics)" and feature_files:
+        files = feature_files
+        prefix = FEATURES_PREFIX
+    else:
+        files = processed_files
+        prefix = PROCESSED_PREFIX
 
     if not files:
-        st.sidebar.warning("No processed files found")
-        return None, 0
+        st.sidebar.warning("No files found")
+        return None, None, 0
 
     selected_file = st.sidebar.selectbox(
         "Select batch file",
         files,
-        format_func=lambda x: x.replace(PROCESSED_PREFIX, "")
+        format_func=lambda x: x.replace(prefix, "")
     )
 
     # Sample size slider
@@ -155,7 +192,8 @@ def render_sidebar():
     st.sidebar.divider()
     st.sidebar.caption("OpenWebText2 Pipeline Dashboard")
 
-    return selected_file, sample_size
+    has_topics = "Features" in data_source and feature_files
+    return selected_file, has_topics, sample_size
 
 
 def render_overview_tab(df: pd.DataFrame):
@@ -310,96 +348,210 @@ def render_samples_tab(df: pd.DataFrame):
                     st.caption(f"Normalized length: {row['normalized_length']:,}")
 
 
-def render_topics_tab():
-    """Render the Topics tab (placeholder for Phase 2)."""
+def render_topics_tab(df: pd.DataFrame, has_topics: bool):
+    """Render the Topics tab with real or placeholder data."""
     st.header("Topic Modeling")
 
-    st.info(
-        """
-        **Topic modeling coming in Phase 2**
+    if not has_topics or "dominant_topic" not in df.columns:
+        st.info(
+            """
+            **No topic data available**
 
-        This tab will display:
-        - Topic clusters discovered via LDA
-        - Top words per topic with relevance scores
-        - Topic distribution across the corpus
-        - Interactive topic exploration
+            Select "Features (with topics)" data source from the sidebar,
+            or wait for the modeling service to process data.
+            """
+        )
+        return
 
-        The modeling service will process normalized text through PySpark LDA
-        to extract meaningful topics from the OpenWebText2 corpus.
-        """
-    )
+    # Topic distribution
+    st.subheader("Topic Distribution")
 
-    # Placeholder visualization
-    st.subheader("Preview: Topic Distribution (Placeholder)")
-
-    placeholder_data = pd.DataFrame({
-        "Topic": [f"Topic {i}" for i in range(1, 11)],
-        "Document Count": [150, 120, 100, 90, 85, 75, 70, 60, 55, 45]
+    topic_counts = df["dominant_topic"].value_counts().sort_index()
+    topic_df = pd.DataFrame({
+        "Topic": [f"Topic {i}" for i in topic_counts.index],
+        "Document Count": topic_counts.values
     })
 
     fig = px.bar(
-        placeholder_data,
+        topic_df,
         x="Topic",
         y="Document Count",
-        title="Example Topic Distribution (Placeholder Data)",
+        title="Documents per Topic",
         color="Document Count",
         color_continuous_scale="Blues"
     )
     st.plotly_chart(fig, use_container_width=True)
 
-    st.caption("This is placeholder data. Real topic modeling results will appear after Phase 2 implementation.")
+    # Top words per topic
+    st.subheader("Top Words per Topic")
+
+    if "top_words" in df.columns:
+        # Get unique topics and their top words
+        topic_words = {}
+        for _, row in df.iterrows():
+            topic_id = row.get("dominant_topic", -1)
+            words = row.get("top_words", [])
+            if topic_id >= 0 and words and topic_id not in topic_words:
+                topic_words[topic_id] = words
+
+        cols = st.columns(min(5, len(topic_words)))
+        for i, (topic_id, words) in enumerate(sorted(topic_words.items())):
+            with cols[i % 5]:
+                st.markdown(f"**Topic {topic_id}**")
+                if isinstance(words, list):
+                    st.caption(", ".join(words[:7]))
+                else:
+                    st.caption(str(words))
+
+    # Topic distribution heatmap
+    st.subheader("Topic Probability Distribution")
+
+    if "topic_distribution" in df.columns:
+        # Sample for visualization
+        sample_df = df.head(50)
+        dist_data = []
+        for idx, row in sample_df.iterrows():
+            dist = row.get("topic_distribution", [])
+            if isinstance(dist, list) and len(dist) > 0:
+                for topic_idx, prob in enumerate(dist):
+                    dist_data.append({
+                        "Document": f"Doc {row.get('id', idx)}",
+                        "Topic": f"T{topic_idx}",
+                        "Probability": prob
+                    })
+
+        if dist_data:
+            dist_df = pd.DataFrame(dist_data)
+            fig = px.density_heatmap(
+                dist_df,
+                x="Topic",
+                y="Document",
+                z="Probability",
+                title="Topic Probabilities per Document (sample)",
+                color_continuous_scale="Viridis"
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
 
-def render_drift_tab():
-    """Render the Drift Timeline tab (placeholder for Phase 3)."""
+def render_drift_tab(df: pd.DataFrame, has_topics: bool):
+    """Render the Drift Timeline tab with real or placeholder data."""
     st.header("Drift Detection Timeline")
 
-    st.info(
-        """
-        **Drift detection coming in Phase 3**
+    if not has_topics or "window_id" not in df.columns:
+        st.info(
+            """
+            **No drift data available**
 
-        This tab will display:
-        - Timeline view of topic changes over time windows
-        - Drift magnitude indicators per window
-        - NPMI coherence scores for topic quality
-        - Alerts for significant topic shifts
+            Select "Features (with topics)" data source from the sidebar,
+            or wait for the modeling service to process data.
+            """
+        )
+        return
 
-        The system will split data into time windows and detect
-        when topic distributions shift significantly.
-        """
-    )
+    # Drift summary metrics
+    col1, col2, col3 = st.columns(3)
 
-    # Placeholder timeline
-    st.subheader("Preview: Topic Drift Over Time (Placeholder)")
+    with col1:
+        num_windows = df["window_id"].nunique()
+        st.metric("Time Windows", num_windows)
 
-    import numpy as np
-    np.random.seed(42)
+    with col2:
+        if "drift_detected" in df.columns:
+            drift_events = df[df["drift_detected"] == True]["window_id"].nunique()
+            st.metric("Drift Events", drift_events)
+        else:
+            st.metric("Drift Events", "N/A")
 
-    placeholder_drift = pd.DataFrame({
-        "Window": [f"W{i}" for i in range(1, 13)],
-        "Topic 1": np.random.uniform(0.1, 0.3, 12),
-        "Topic 2": np.random.uniform(0.15, 0.35, 12),
-        "Topic 3": np.random.uniform(0.1, 0.25, 12),
-    })
+    with col3:
+        if "js_divergence" in df.columns:
+            avg_div = df.groupby("window_id")["js_divergence"].first().mean()
+            st.metric("Avg JS Divergence", f"{avg_div:.4f}")
+        else:
+            st.metric("Avg JS Divergence", "N/A")
 
-    fig = go.Figure()
-    for col in ["Topic 1", "Topic 2", "Topic 3"]:
+    st.divider()
+
+    # JS Divergence over time
+    st.subheader("Jensen-Shannon Divergence Over Time")
+
+    if "js_divergence" in df.columns and "window_id" in df.columns:
+        window_stats = df.groupby("window_id").agg({
+            "js_divergence": "first",
+            "drift_detected": "first" if "drift_detected" in df.columns else lambda x: False,
+            "drift_magnitude": "first" if "drift_magnitude" in df.columns else lambda x: "none"
+        }).reset_index()
+
+        fig = go.Figure()
+
+        # Add JS divergence line
         fig.add_trace(go.Scatter(
-            x=placeholder_drift["Window"],
-            y=placeholder_drift[col],
+            x=window_stats["window_id"],
+            y=window_stats["js_divergence"],
             mode="lines+markers",
-            name=col
+            name="JS Divergence",
+            line=dict(color="blue")
         ))
 
-    fig.update_layout(
-        title="Example Topic Proportions Over Time (Placeholder Data)",
-        xaxis_title="Time Window",
-        yaxis_title="Topic Proportion",
-        legend_title="Topics"
-    )
-    st.plotly_chart(fig, use_container_width=True)
+        # Add threshold line
+        fig.add_hline(y=0.15, line_dash="dash", line_color="red",
+                      annotation_text="Drift Threshold (0.15)")
 
-    st.caption("This is placeholder data. Real drift detection results will appear after Phase 3 implementation.")
+        # Mark drift events
+        drift_windows = window_stats[window_stats["drift_detected"] == True]
+        if not drift_windows.empty:
+            fig.add_trace(go.Scatter(
+                x=drift_windows["window_id"],
+                y=drift_windows["js_divergence"],
+                mode="markers",
+                name="Drift Detected",
+                marker=dict(color="red", size=12, symbol="x")
+            ))
+
+        fig.update_layout(
+            title="Topic Distribution Drift Over Time",
+            xaxis_title="Window ID",
+            yaxis_title="JS Divergence",
+            showlegend=True
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Topic distribution per window
+    st.subheader("Topic Distribution per Window")
+
+    if "dominant_topic" in df.columns and "window_id" in df.columns:
+        # Calculate topic proportions per window
+        topic_by_window = df.groupby(["window_id", "dominant_topic"]).size().unstack(fill_value=0)
+        topic_by_window = topic_by_window.div(topic_by_window.sum(axis=1), axis=0)
+
+        fig = go.Figure()
+        for topic in topic_by_window.columns:
+            fig.add_trace(go.Scatter(
+                x=topic_by_window.index,
+                y=topic_by_window[topic],
+                mode="lines+markers",
+                name=f"Topic {topic}",
+                stackgroup="one"
+            ))
+
+        fig.update_layout(
+            title="Topic Proportions Over Time Windows",
+            xaxis_title="Window ID",
+            yaxis_title="Proportion",
+            legend_title="Topics"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # Drift events table
+    if "drift_detected" in df.columns:
+        st.subheader("Drift Events Log")
+        drift_events = df[df["drift_detected"] == True].groupby("window_id").first().reset_index()
+
+        if not drift_events.empty:
+            display_cols = ["window_id", "js_divergence", "drift_magnitude"]
+            display_cols = [c for c in display_cols if c in drift_events.columns]
+            st.dataframe(drift_events[display_cols], use_container_width=True)
+        else:
+            st.success("No significant drift detected in the data.")
 
 
 def main():
@@ -407,7 +559,7 @@ def main():
     st.title("OpenWebText2 Topic Analysis Dashboard")
 
     # Sidebar
-    selected_file, sample_size = render_sidebar()
+    selected_file, has_topics, sample_size = render_sidebar()
 
     if not selected_file:
         st.warning("Please configure Azure connection and select a data file from the sidebar.")
@@ -425,8 +577,8 @@ def main():
     tab1, tab2, tab3, tab4 = st.tabs([
         "Overview",
         "Text Samples",
-        "Topics (Phase 2)",
-        "Drift Timeline (Phase 3)"
+        "Topics",
+        "Drift Timeline"
     ])
 
     with tab1:
@@ -436,10 +588,10 @@ def main():
         render_samples_tab(df)
 
     with tab3:
-        render_topics_tab()
+        render_topics_tab(df, has_topics)
 
     with tab4:
-        render_drift_tab()
+        render_drift_tab(df, has_topics)
 
 
 if __name__ == "__main__":
